@@ -1,0 +1,4 @@
+123456
+cd /home/admin1/develop/gsf4
+./bb.sh
+exit
