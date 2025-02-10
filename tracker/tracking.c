@@ -75,22 +75,3 @@ void print_tracks(void) {
                tracks[i].lost_frames);
     }
 }
-
-int main(void) {
-    while (1) {
-        BBox detections[MAX_TRACKS];
-
-        /* get_detections получает данные с камеры (реализация находится в test.c) */
-        int num_detections = get_detections(detections, MAX_TRACKS);
-
-        update_tracks(detections, num_detections);
-
-        printf("\nТекущее состояние треков:\n");
-        print_tracks();
-
-        /* Задержка между кадрами (например, 1 секунда) */
-        sleep(1);
-    }
-
-    return 0;
-}

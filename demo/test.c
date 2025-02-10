@@ -263,6 +263,121 @@ static int AddDataBuffer(svp_acl_mdl_dataset *dataset, void *dev_ptr, size_t siz
     return 0;
 }
 
+int get_detections(BBox *detections, int max_detections) {
+    // Ждём появления нового кадра (g_frame.fresh == 1)
+    pthread_mutex_lock(&g_frame.mutex);
+    while (g_frame.fresh == 0) {
+        pthread_mutex_unlock(&g_frame.mutex);
+        usleep(1000);  // ожидание 1 мс
+        pthread_mutex_lock(&g_frame.mutex);
+    }
+    unsigned char *local_buf = g_frame.host_buf;
+    int local_size = g_frame.size;
+    int loc_w = g_frame.width;
+    int loc_h = g_frame.height;
+    g_frame.fresh = 0;  // Помечаем, что кадр забрали
+    pthread_mutex_unlock(&g_frame.mutex);
+
+    // Копируем BGR-данные в устройство (g_dev_in0)
+    if (g_dev_in0 && local_size <= (int)g_dev_in0_size) {
+        memcpy(g_dev_in0, local_buf, local_size);
+    } else {
+        return 0;
+    }
+
+    // Подготавливаем датасеты для инференса
+    svp_acl_mdl_dataset *inDset = svp_acl_mdl_create_dataset();
+    svp_acl_mdl_dataset *outDset = svp_acl_mdl_create_dataset();
+    if (!inDset || !outDset) {
+        if (inDset) svp_acl_mdl_destroy_dataset(inDset);
+        if (outDset) svp_acl_mdl_destroy_dataset(outDset);
+        return 0;
+    }
+
+    // Добавляем входные буферы (пример для первого входа)
+    size_t stride0 = svp_acl_mdl_get_input_default_stride(g_model_desc, 0);
+    AddDataBuffer(inDset, g_dev_in0, g_dev_in0_size, stride0);
+    // Если модель имеет дополнительные входы, добавьте их аналогично:
+    if (g_input_num >= 2) {
+        size_t stride1 = svp_acl_mdl_get_input_default_stride(g_model_desc, 1);
+        AddDataBuffer(inDset, g_dev_in1, g_dev_in1_size, stride1);
+    }
+    // Для in2 и in3 можно заполнить нулями, если не используются:
+    if (g_input_num >= 3) {
+        memset(g_dev_in2, 0, g_dev_in2_size);
+        size_t stride2 = svp_acl_mdl_get_input_default_stride(g_model_desc, 2);
+        AddDataBuffer(inDset, g_dev_in2, g_dev_in2_size, stride2);
+    }
+    if (g_input_num >= 4) {
+        memset(g_dev_in3, 0, g_dev_in3_size);
+        size_t stride3 = svp_acl_mdl_get_input_default_stride(g_model_desc, 3);
+        AddDataBuffer(inDset, g_dev_in3, g_dev_in3_size, stride3);
+    }
+
+    // Добавляем выходные буферы
+    if (g_output_num >= 1) {
+        size_t ostride0 = svp_acl_mdl_get_output_default_stride(g_model_desc, 0);
+        AddDataBuffer(outDset, g_dev_out0, g_dev_out0_size, ostride0);
+    }
+    if (g_output_num >= 2) {
+        size_t ostride1 = svp_acl_mdl_get_output_default_stride(g_model_desc, 1);
+        AddDataBuffer(outDset, g_dev_out1, g_dev_out1_size, ostride1);
+    }
+
+    // Выполняем инференс модели
+    svp_acl_error ret = svp_acl_mdl_execute(g_model_id, inDset, outDset);
+    if (ret != SVP_ACL_SUCCESS) {
+        // Очистка датасетов (пропустите детекции)
+        size_t nb = svp_acl_mdl_get_dataset_num_buffers(inDset);
+        for (size_t i = 0; i < nb; i++) {
+            svp_acl_data_buffer* db = svp_acl_mdl_get_dataset_buffer(inDset, i);
+            if (db) svp_acl_destroy_data_buffer(db);
+        }
+        svp_acl_mdl_destroy_dataset(inDset);
+        nb = svp_acl_mdl_get_dataset_num_buffers(outDset);
+        for (size_t i = 0; i < nb; i++) {
+            svp_acl_data_buffer* db = svp_acl_mdl_get_dataset_buffer(outDset, i);
+            if (db) svp_acl_destroy_data_buffer(db);
+        }
+        svp_acl_mdl_destroy_dataset(outDset);
+        return 0;
+    }
+
+    // Парсим выход модели: функция parse_output уже реализована в test.c
+    AI_DATA_INFO_S arr[32];
+    memset(arr, 0, sizeof(arr));
+    int arr_count = 0;
+    parse_output(outDset, loc_w, loc_h, arr, &arr_count, 32);
+
+    // Очистка датасетов
+    {
+        size_t nb = svp_acl_mdl_get_dataset_num_buffers(inDset);
+        for (size_t i = 0; i < nb; i++) {
+            svp_acl_data_buffer* db = svp_acl_mdl_get_dataset_buffer(inDset, i);
+            if (db) svp_acl_destroy_data_buffer(db);
+        }
+        svp_acl_mdl_destroy_dataset(inDset);
+    }
+    {
+        size_t nb = svp_acl_mdl_get_dataset_num_buffers(outDset);
+        for (size_t i = 0; i < nb; i++) {
+            svp_acl_data_buffer* db = svp_acl_mdl_get_dataset_buffer(outDset, i);
+            if (db) svp_acl_destroy_data_buffer(db);
+        }
+        svp_acl_mdl_destroy_dataset(outDset);
+    }
+
+    // Преобразуем распарсенные данные в массив BBox
+    int count = (arr_count < max_detections) ? arr_count : max_detections;
+    for (int i = 0; i < count; i++) {
+        detections[i].x = (float)arr[i].rect.x;
+        detections[i].y = (float)arr[i].rect.y;
+        detections[i].w = (float)arr[i].rect.width;
+        detections[i].h = (float)arr[i].rect.height;
+    }
+    return count;
+}
+
 
 // Возвращает 0 при успехе
 static int parse_output(svp_acl_mdl_dataset *out,
@@ -496,13 +611,9 @@ static void *InferenceThread(void *arg)
 
                 // Интеграция трекинга
                 BBox detections[32];
-                for (int i = 0; i < arr_count; i++) {
-                    detections[i].x = (float)arr[i].rect.x;
-                    detections[i].y = (float)arr[i].rect.y;
-                    detections[i].w = (float)arr[i].rect.width;
-                    detections[i].h = (float)arr[i].rect.height;
-                }
-                update_tracks(detections, arr_count);
+                int num_detections = get_detections(arr, arr_count, detections, 32);
+
+                update_tracks(detections, num_detections);
 
                 int final_count = track_count;
                 for (int i = 0; i < final_count; i++) {
