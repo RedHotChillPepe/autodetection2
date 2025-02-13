@@ -11,16 +11,19 @@
 #include "svp_acl.h"
 #include "svp_acl_rt.h"
 #include "svp_acl_mdl.h"
+#include "tracking.h"
+#include "speed_measurement.h"
 
 #include "devsdk.h"
 
 #define MODEL_INPUT_WIDTH   640
 #define MODEL_INPUT_HEIGHT  640
 
+int get_detections(AI_DATA_INFO_S *arr, int arr_count, BBox *detections, int max_detections);
+static int parse_output(svp_acl_mdl_dataset *out, int net_w, int net_h, AI_DATA_INFO_S *arr, int *arr_count, int max_arr);
 
 static int g_targetWidth  = MODEL_INPUT_WIDTH;  // по умолчанию == 640
 static int g_targetHeight = MODEL_INPUT_HEIGHT; // по умолчанию == 640
-
 
 static volatile int g_exit = 0;
 static int g_device_id = 0;
@@ -49,25 +52,25 @@ static FrameData g_frame;
 
 // Пример имён классов
 
-static const char* g_class_names[] = {
-    "person","bicycle","car","motorcycle","airplane","bus","train","truck","boat",
-    "traffic light","fire hydrant","stop sign","parking meter","bench","bird","cat",
-    "dog","horse","sheep","cow","elephant","bear","zebra","giraffe","backpack",
-    "umbrella","handbag","tie","suitcase","frisbee","skis","snowboard","sports ball",
-    "kite","baseball bat","baseball glove","skateboard","surfboard","tennis racket",
-    "bottle","wine glass","cup","fork","knife","spoon","bowl","banana","apple",
-    "sandwich","orange","broccoli","carrot","hot dog","pizza","donut","cake","chair",
-    "couch","potted plant","bed","dining table","toilet","tv","laptop","mouse",
-    "remote","keyboard","cell phone","microwave","oven","toaster","sink",
-    "refrigerator","book","clock","vase","scissors","teddy bear","hair drier","toothbrush"
-};
-
-
-
 // static const char* g_class_names[] = {
-//     "car","comerc","truck","bus","trailer","bicycle","motorcycle","tractor","tram",
-//     "pedestrian"
+//     "person","bicycle","car","motorcycle","airplane","bus","train","truck","boat",
+//     "traffic light","fire hydrant","stop sign","parking meter","bench","bird","cat",
+//     "dog","horse","sheep","cow","elephant","bear","zebra","giraffe","backpack",
+//     "umbrella","handbag","tie","suitcase","frisbee","skis","snowboard","sports ball",
+//     "kite","baseball bat","baseball glove","skateboard","surfboard","tennis racket",
+//     "bottle","wine glass","cup","fork","knife","spoon","bowl","banana","apple",
+//     "sandwich","orange","broccoli","carrot","hot dog","pizza","donut","cake","chair",
+//     "couch","potted plant","bed","dining table","toilet","tv","laptop","mouse",
+//     "remote","keyboard","cell phone","microwave","oven","toaster","sink",
+//     "refrigerator","book","clock","vase","scissors","teddy bear","hair drier","toothbrush"
 // };
+
+
+
+static const char* g_class_names[] = {
+    "car","comerc","truck","bus","trailer","bicycle","motorcycle","tractor","tram",
+    "pedestrian"
+};
 static int g_class_count = sizeof(g_class_names)/sizeof(g_class_names[0]);
 
 // ---------------------------------------------------------------------
@@ -267,6 +270,108 @@ static int AddDataBuffer(svp_acl_mdl_dataset *dataset, void *dev_ptr, size_t siz
     return 0;
 }
 
+int get_detections(AI_DATA_INFO_S *arr, int arr_count, BBox *detections, int max_detections) {
+    pthread_mutex_lock(&g_frame.mutex);
+    while (g_frame.fresh == 0) {
+        pthread_mutex_unlock(&g_frame.mutex);
+        usleep(1000);
+        pthread_mutex_lock(&g_frame.mutex);
+    }
+    unsigned char *local_buf = g_frame.host_buf;
+    int local_size = g_frame.size;
+    int loc_w = g_frame.width;
+    int loc_h = g_frame.height;
+    g_frame.fresh = 0;  
+    pthread_mutex_unlock(&g_frame.mutex);
+
+    if (g_dev_in0 && local_size <= (int)g_dev_in0_size) {
+        memcpy(g_dev_in0, local_buf, local_size);
+    } else {
+        return 0;
+    }
+
+    svp_acl_mdl_dataset *inDset = svp_acl_mdl_create_dataset();
+    svp_acl_mdl_dataset *outDset = svp_acl_mdl_create_dataset();
+    if (!inDset || !outDset) {
+        if (inDset) svp_acl_mdl_destroy_dataset(inDset);
+        if (outDset) svp_acl_mdl_destroy_dataset(outDset);
+        return 0;
+    }
+
+    size_t stride0 = svp_acl_mdl_get_input_default_stride(g_model_desc, 0);
+    AddDataBuffer(inDset, g_dev_in0, g_dev_in0_size, stride0);
+    if (g_input_num >= 2) {
+        size_t stride1 = svp_acl_mdl_get_input_default_stride(g_model_desc, 1);
+        AddDataBuffer(inDset, g_dev_in1, g_dev_in1_size, stride1);
+    }
+    if (g_input_num >= 3) {
+        memset(g_dev_in2, 0, g_dev_in2_size);
+        size_t stride2 = svp_acl_mdl_get_input_default_stride(g_model_desc, 2);
+        AddDataBuffer(inDset, g_dev_in2, g_dev_in2_size, stride2);
+    }
+    if (g_input_num >= 4) {
+        memset(g_dev_in3, 0, g_dev_in3_size);
+        size_t stride3 = svp_acl_mdl_get_input_default_stride(g_model_desc, 3);
+        AddDataBuffer(inDset, g_dev_in3, g_dev_in3_size, stride3);
+    }
+
+    if (g_output_num >= 1) {
+        size_t ostride0 = svp_acl_mdl_get_output_default_stride(g_model_desc, 0);
+        AddDataBuffer(outDset, g_dev_out0, g_dev_out0_size, ostride0);
+    }
+    if (g_output_num >= 2) {
+        size_t ostride1 = svp_acl_mdl_get_output_default_stride(g_model_desc, 1);
+        AddDataBuffer(outDset, g_dev_out1, g_dev_out1_size, ostride1);
+    }
+
+    svp_acl_error ret = svp_acl_mdl_execute(g_model_id, inDset, outDset);
+    if (ret != SVP_ACL_SUCCESS) {
+        size_t nb = svp_acl_mdl_get_dataset_num_buffers(inDset);
+        for (size_t i = 0; i < nb; i++) {
+            svp_acl_data_buffer* db = svp_acl_mdl_get_dataset_buffer(inDset, i);
+            if (db) svp_acl_destroy_data_buffer(db);
+        }
+        svp_acl_mdl_destroy_dataset(inDset);
+        nb = svp_acl_mdl_get_dataset_num_buffers(outDset);
+        for (size_t i = 0; i < nb; i++) {
+            svp_acl_data_buffer* db = svp_acl_mdl_get_dataset_buffer(outDset, i);
+            if (db) svp_acl_destroy_data_buffer(db);
+        }
+        svp_acl_mdl_destroy_dataset(outDset);
+        return 0;
+    }
+
+    // AI_DATA_INFO_S arr[32];
+    // memset(arr, 0, sizeof(arr));
+    // int arr_count = 0;
+    parse_output(outDset, loc_w, loc_h, arr, &arr_count, 32);
+
+    {
+        size_t nb = svp_acl_mdl_get_dataset_num_buffers(inDset);
+        for (size_t i = 0; i < nb; i++) {
+            svp_acl_data_buffer* db = svp_acl_mdl_get_dataset_buffer(inDset, i);
+            if (db) svp_acl_destroy_data_buffer(db);
+        }
+        svp_acl_mdl_destroy_dataset(inDset);
+    }
+    {
+        size_t nb = svp_acl_mdl_get_dataset_num_buffers(outDset);
+        for (size_t i = 0; i < nb; i++) {
+            svp_acl_data_buffer* db = svp_acl_mdl_get_dataset_buffer(outDset, i);
+            if (db) svp_acl_destroy_data_buffer(db);
+        }
+        svp_acl_mdl_destroy_dataset(outDset);
+    }
+
+    int count = (arr_count < max_detections) ? arr_count : max_detections;
+    for (int i = 0; i < count; i++) {
+        detections[i].x = (float)arr[i].rect.x;
+        detections[i].y = (float)arr[i].rect.y;
+        detections[i].w = (float)arr[i].rect.width;
+        detections[i].h = (float)arr[i].rect.height;
+    }
+    return count;
+}
 
 static int parse_output(svp_acl_mdl_dataset *out,
                         int net_w,        // ширина входа модели, 640
@@ -343,6 +448,12 @@ static int parse_output(svp_acl_mdl_dataset *out,
         offset += cnum;
     }
     free(validBoxNum);
+
+    printf("[INFO]  current class valid box number is: %d\n", totalValid);
+    for(int i=0; i<totalValid; i++){
+        printf("[INFO]  lx: %.2f, ly: %.2f, rx: %.2f, ry: %.2f, score: %.5f; class id: %d\n",
+               boxes[i].lx, boxes[i].ly, boxes[i].rx, boxes[i].ry, boxes[i].score, boxes[i].cid);
+    }
 
     // -----------------------------------------------------
     // 4) Масштабируем координаты и копируем в arr
@@ -646,7 +757,26 @@ static void *InferenceThread(void *arg)
                 int arr_count=0;
                 uint64_t p1= get_time_us();
                 parse_output(outDset, loc_w, loc_h, arr, &arr_count, 32);
-                
+
+                // Интеграция трекинга
+                BBox detections[32];
+                int num_detections = get_detections(arr, arr_count, detections, 32);
+
+                update_tracks(detections, num_detections);
+                update_speed_measurements(tracks, track_count);
+
+                int final_count = track_count;
+                for (int i = 0; i < final_count; i++) {
+                    arr[i].rect.x = (int)tracks[i].bbox.x;
+                    arr[i].rect.y = (int)tracks[i].bbox.y;
+                    arr[i].rect.width = (int)tracks[i].bbox.w;
+                    arr[i].rect.height = (int)tracks[i].bbox.h;
+                    snprintf(arr[i].szText, sizeof(arr[i].szText), "ID:%d, %s, %.1f km/h", 
+                    tracks[i].id, 
+                    (tracks[i].cid >= 0 && tracks[i].cid < g_class_count) ? g_class_names[tracks[i].cid] : "Unknown",
+                    get_speed_for_track(tracks[i].id));
+                }
+                arr_count = final_count;                
 
                 // Отрисовка
                 DEVSDK_SetAiData(d_hdl, arr, arr_count);
@@ -729,6 +859,7 @@ int yuv_dwar_callback(int nStatus, int nWidth, int nHeight, int nPixelFormat, in
 
 int main(int argc, char* argv[])
 {
+    speed_measurement_init();
     if(argc<2){
         printf("Usage: %s yolov8.om [vpss_chn]\n", argv[0]);
         return 0;
