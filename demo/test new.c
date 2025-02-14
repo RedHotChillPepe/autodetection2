@@ -484,15 +484,27 @@ static int parse_output(svp_acl_mdl_dataset *out,
 
         // Формируем текст
         char tmp[64];
+        // if (boxes[i].cid >= 0 && boxes[i].cid < g_class_count) {
+        //     snprintf(tmp, sizeof(tmp), "%s(%.2f)",
+        //              g_class_names[boxes[i].cid],
+        //              boxes[i].score);
+        // } else {
+        //     snprintf(tmp, sizeof(tmp), "cls_%d(%.2f)",
+        //              boxes[i].cid,
+        //              boxes[i].score);
+        // }
+
         if (boxes[i].cid >= 0 && boxes[i].cid < g_class_count) {
-            snprintf(tmp, sizeof(tmp), "%s(%.2f)",
+            snprintf(tmp, sizeof(tmp), "ID:%d, %s, %.1f km/h",
+                     tracks[i].id,
                      g_class_names[boxes[i].cid],
-                     boxes[i].score);
+                     get_speed_for_track(tracks[i].id));
         } else {
             snprintf(tmp, sizeof(tmp), "cls_%d(%.2f)",
                      boxes[i].cid,
                      boxes[i].score);
         }
+
         strncpy(arr[i].szText, tmp, sizeof(arr[i].szText) - 1);
         arr[i].szText[sizeof(arr[i].szText) - 1] = '\0';
     }
