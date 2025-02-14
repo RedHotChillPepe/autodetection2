@@ -78,7 +78,8 @@ static int g_class_count = sizeof(g_class_names)/sizeof(g_class_names[0]);
 typedef struct {
     float lx, ly, rx, ry;
     float score;
-    int   cid;
+    int cid;
+    int id;
 } DET_BOX;
 
 static inline uint64_t get_time_us()
@@ -494,15 +495,26 @@ static int parse_output(svp_acl_mdl_dataset *out,
         //              boxes[i].score);
         // }
 
-        if (boxes[i].cid >= 0 && boxes[i].cid < g_class_count) {
+        // if (boxes[i].cid >= 0 && boxes[i].cid < g_class_count) {
+        //     snprintf(tmp, sizeof(tmp), "ID:%d, %s, %.1f km/h",
+        //              boxes[i].id,
+        //              g_class_names[boxes[i].cid],
+        //              get_speed_for_track(boxes[i].id));
+        // } else {
+        //     snprintf(tmp, sizeof(tmp), "cls_%d(%.2f)",
+        //              boxes[i].cid,
+        //              boxes[i].score);
+        // }
+
+        if (tracks[i].cid >= 0 && tracks[i].cid < g_class_count) {
             snprintf(tmp, sizeof(tmp), "ID:%d, %s, %.1f km/h",
                      tracks[i].id,
-                     g_class_names[boxes[i].cid],
+                     g_class_names[tracks[i].cid],
                      get_speed_for_track(tracks[i].id));
         } else {
             snprintf(tmp, sizeof(tmp), "cls_%d(%.2f)",
-                     boxes[i].cid,
-                     boxes[i].score);
+                    tracks[i].cid,
+                    boxes[i].score);
         }
 
         strncpy(arr[i].szText, tmp, sizeof(arr[i].szText) - 1);
