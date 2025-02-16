@@ -14,6 +14,7 @@ typedef struct {
     float y;
     float w;
     float h;
+    int cid;
 } BBox;
 
 /* Структура для описания трека объекта */
@@ -23,12 +24,13 @@ typedef struct {
     int lost_frames;
     float center_x;
     float center_y;
+    int cid;
 } Track;
 
 /* Константы для трекинга */
 #define MAX_TRACKS 100
 #define DISTANCE_THRESHOLD 50.0f 
-#define MAX_LOST_FRAMES 5
+#define MAX_LOST_FRAMES 10
 
 /* Глобальные переменные, определяемые в tracking.c */
 extern Track tracks[MAX_TRACKS];
@@ -45,3 +47,4 @@ void print_tracks(void);
 #endif
 
 #endif /* TRACKING_H */
+
