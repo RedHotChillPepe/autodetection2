@@ -16,6 +16,9 @@ float euclidean_distance(float x1, float y1, float x2, float y2) {
 
 void update_tracks(BBox *detections, int num_detections) {
     int updated_tracks[MAX_TRACKS] = {0};
+    for (int i = 0; i < num_detections; i++) {
+        printf("DEBUG update_tracks: detection[%d].cid = %d\n", i, detections[i].cid);
+    }
 
     for (int i = 0; i < num_detections; i++) {
         float det_center_x = detections[i].x + detections[i].w / 2.0f;
@@ -37,6 +40,7 @@ void update_tracks(BBox *detections, int num_detections) {
             tracks[best_track_idx].center_x = det_center_x;
             tracks[best_track_idx].center_y = det_center_y;
             tracks[best_track_idx].lost_frames = 0;
+            tracks[best_track_idx].cid = detections[i].cid;
             updated_tracks[best_track_idx] = 1;
         } else {
             if (track_count < MAX_TRACKS) {
@@ -45,6 +49,7 @@ void update_tracks(BBox *detections, int num_detections) {
                 tracks[track_count].center_x = det_center_x;
                 tracks[track_count].center_y = det_center_y;
                 tracks[track_count].lost_frames = 0;
+                tracks[track_count].cid = detections[i].cid;
                 track_count++;
             }
         }
@@ -75,3 +80,4 @@ void print_tracks(void) {
                tracks[i].lost_frames);
     }
 }
+
